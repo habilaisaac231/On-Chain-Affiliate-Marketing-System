@@ -277,3 +277,123 @@
     (ok (not (get active affiliate-data)))
   )
 )
+
+
+(define-map referral-codes
+  { code: (string-ascii 12) }
+  { affiliate: principal, active: bool, created-at: uint, uses: uint }
+)
+
+(define-map affiliate-codes
+  { affiliate: principal }
+  { code: (string-ascii 12) }
+)
+
+(define-data-var code-counter uint u1000)
+
+(define-read-only (get-referral-code (code (string-ascii 12)))
+  (map-get? referral-codes { code: code })
+)
+
+(define-read-only (get-affiliate-code (affiliate principal))
+  (map-get? affiliate-codes { affiliate: affiliate })
+)
+
+(define-private (generate-code-string (seed uint))
+  (let
+    (
+      (base (+ seed (var-get code-counter)))
+      (chars "ABCDEFGHJKLMNPQRSTUVWXYZ23456789")
+      (char-count u32)
+    )
+    (concat
+      (unwrap-panic (element-at chars (mod base char-count)))
+      (concat
+        (unwrap-panic (element-at chars (mod (/ base char-count) char-count)))
+        (concat
+          (unwrap-panic (element-at chars (mod (/ base (* char-count char-count)) char-count)))
+          (concat
+            (unwrap-panic (element-at chars (mod (/ base (* char-count char-count char-count)) char-count)))
+            (concat
+              (unwrap-panic (element-at chars (mod (/ base (* char-count char-count char-count char-count)) char-count)))
+              (unwrap-panic (element-at chars (mod (/ base (* char-count char-count char-count char-count char-count)) char-count)))
+            )
+          )
+        )
+      )
+    )
+  )
+)
+
+(define-public (generate-referral-code)
+  (let
+    (
+      (affiliate tx-sender)
+      (affiliate-data (unwrap! (map-get? affiliates { affiliate: affiliate }) err-not-found))
+      (current-block stacks-block-height)
+      (code (generate-code-string current-block))
+    )
+    (asserts! (get active affiliate-data) err-unauthorized)
+    (asserts! (is-none (map-get? affiliate-codes { affiliate: affiliate })) err-already-exists)
+    
+    (map-set referral-codes
+      { code: code }
+      {
+        affiliate: affiliate,
+        active: true,
+        created-at: current-block,
+        uses: u0
+      }
+    )
+    
+    (map-set affiliate-codes
+      { affiliate: affiliate }
+      { code: code }
+    )
+    
+    (var-set code-counter (+ (var-get code-counter) u1))
+    (ok code)
+  )
+)
+
+(define-public (create-referral-by-code (code (string-ascii 12)) (customer principal) (sale-amount uint))
+  (let
+    (
+      (merchant tx-sender)
+      (code-data (unwrap! (map-get? referral-codes { code: code }) err-not-found))
+      (affiliate (get affiliate code-data))
+      (referral-id (var-get next-referral-id))
+      (current-block stacks-block-height)
+      (affiliate-data (unwrap! (map-get? affiliates { affiliate: affiliate }) err-not-found))
+      (merchant-data (unwrap! (map-get? merchants { merchant: merchant }) err-not-found))
+      (commission-amount (calculate-commission sale-amount (get commission-rate affiliate-data)))
+    )
+    (asserts! (> sale-amount u0) err-invalid-amount)
+    (asserts! (get active code-data) err-unauthorized)
+    (asserts! (get active affiliate-data) err-unauthorized)
+    (asserts! (get active merchant-data) err-unauthorized)
+    
+    (map-set referrals
+      { referral-id: referral-id }
+      {
+        affiliate: affiliate,
+        merchant: merchant,
+        customer: customer,
+        sale-amount: sale-amount,
+        commission-amount: commission-amount,
+        status: "pending",
+        created-at: current-block,
+        completed-at: none
+      }
+    )
+    
+    (map-set referral-codes
+      { code: code }
+      (merge code-data { uses: (+ (get uses code-data) u1) })
+    )
+    
+    (var-set next-referral-id (+ referral-id u1))
+    (var-set total-referrals (+ (var-get total-referrals) u1))
+    (ok referral-id)
+  )
+)
