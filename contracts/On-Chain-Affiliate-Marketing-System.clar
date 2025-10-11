@@ -6,6 +6,27 @@
 (define-constant err-invalid-amount (err u104))
 (define-constant err-unauthorized (err u105))
 
+
+(define-constant tier-bronze "BRONZE")
+(define-constant tier-silver "SILVER")
+(define-constant tier-gold "GOLD")
+(define-constant tier-platinum "PLATINUM")
+
+(define-constant bronze-threshold-sales u5000000)
+(define-constant silver-threshold-sales u25000000)
+(define-constant gold-threshold-sales u100000000)
+(define-constant platinum-threshold-sales u500000000)
+
+(define-constant bronze-threshold-refs u10)
+(define-constant silver-threshold-refs u50)
+(define-constant gold-threshold-refs u200)
+(define-constant platinum-threshold-refs u1000)
+
+(define-constant bronze-multiplier u10000)
+(define-constant silver-multiplier u10500)
+(define-constant gold-multiplier u11000)
+(define-constant platinum-multiplier u12000)
+
 (define-data-var min-commission-rate uint u50)
 (define-data-var max-commission-rate uint u2000)
 (define-data-var platform-fee-rate uint u100)
@@ -395,5 +416,62 @@
     (var-set next-referral-id (+ referral-id u1))
     (var-set total-referrals (+ (var-get total-referrals) u1))
     (ok referral-id)
+  )
+)
+
+(define-map affiliate-tiers
+  { affiliate: principal }
+  { tier: (string-ascii 10), tier-multiplier: uint, last-updated: uint }
+)
+
+(define-read-only (get-affiliate-tier (affiliate principal))
+  (default-to
+    { tier: tier-bronze, tier-multiplier: bronze-multiplier, last-updated: u0 }
+    (map-get? affiliate-tiers { affiliate: affiliate })
+  )
+)
+
+(define-read-only (calculate-tier (total-sales uint) (total-refs uint))
+  (if (and (>= total-sales platinum-threshold-sales) (>= total-refs platinum-threshold-refs))
+    { tier: tier-platinum, multiplier: platinum-multiplier }
+    (if (and (>= total-sales gold-threshold-sales) (>= total-refs gold-threshold-refs))
+      { tier: tier-gold, multiplier: gold-multiplier }
+      (if (and (>= total-sales silver-threshold-sales) (>= total-refs silver-threshold-refs))
+        { tier: tier-silver, multiplier: silver-multiplier }
+        { tier: tier-bronze, multiplier: bronze-multiplier }
+      )
+    )
+  )
+)
+
+(define-read-only (calculate-boosted-commission (sale-amount uint) (commission-rate uint) (affiliate principal))
+  (let
+    (
+      (tier-data (get-affiliate-tier affiliate))
+      (tier-multiplier (get tier-multiplier tier-data))
+      (base-commission (calculate-commission sale-amount commission-rate))
+    )
+    (/ (* base-commission tier-multiplier) u10000)
+  )
+)
+
+(define-public (evaluate-and-upgrade-tier (affiliate principal))
+  (let
+    (
+      (affiliate-data (unwrap! (map-get? affiliates { affiliate: affiliate }) err-not-found))
+      (total-sales (get total-earnings affiliate-data))
+      (total-refs (get total-referrals affiliate-data))
+      (new-tier-data (calculate-tier total-sales total-refs))
+      (current-block stacks-block-height)
+    )
+    (map-set affiliate-tiers
+      { affiliate: affiliate }
+      {
+        tier: (get tier new-tier-data),
+        tier-multiplier: (get multiplier new-tier-data),
+        last-updated: current-block
+      }
+    )
+    (ok (get tier new-tier-data))
   )
 )
