@@ -27,6 +27,10 @@
 (define-constant gold-multiplier u11000)
 (define-constant platinum-multiplier u12000)
 
+(define-constant err-contract-not-found (err u106))
+(define-constant err-contract-completed (err u107))
+(define-constant err-milestone-not-reached (err u108))
+
 (define-data-var min-commission-rate uint u50)
 (define-data-var max-commission-rate uint u2000)
 (define-data-var platform-fee-rate uint u100)
@@ -473,5 +477,88 @@
       }
     )
     (ok (get tier new-tier-data))
+  )
+)
+
+(define-map performance-contracts
+  { contract-id: uint }
+  {
+    merchant: principal,
+    affiliate: principal,
+    milestone-target: uint,
+    bonus-rate: uint,
+    current-sales: uint,
+    bonus-claimed: bool,
+    active: bool,
+    created-at: uint,
+    expires-at: uint
+  }
+)
+
+(define-map contract-by-parties
+  { merchant: principal, affiliate: principal }
+  { contract-id: uint }
+)
+
+(define-data-var next-contract-id uint u1)
+
+(define-read-only (get-performance-contract (contract-id uint))
+  (map-get? performance-contracts { contract-id: contract-id })
+)
+
+(define-read-only (get-contract-by-parties (merchant principal) (affiliate principal))
+  (match (map-get? contract-by-parties { merchant: merchant, affiliate: affiliate })
+    contract-ref (get-performance-contract (get contract-id contract-ref))
+    none
+  )
+)
+
+(define-public (create-performance-contract (affiliate principal) (milestone-target uint) (bonus-rate uint) (duration uint))
+  (let
+    (
+      (merchant tx-sender)
+      (contract-id (var-get next-contract-id))
+      (current-block stacks-block-height)
+      (expires-at (+ current-block duration))
+      (merchant-data (unwrap! (map-get? merchants { merchant: merchant }) err-not-found))
+      (affiliate-data (unwrap! (map-get? affiliates { affiliate: affiliate }) err-not-found))
+    )
+    (asserts! (get active merchant-data) err-unauthorized)
+    (asserts! (get active affiliate-data) err-unauthorized)
+    (asserts! (> milestone-target u0) err-invalid-amount)
+    (asserts! (and (>= bonus-rate u0) (<= bonus-rate u5000)) err-invalid-amount)
+    
+    (map-set performance-contracts
+      { contract-id: contract-id }
+      {
+        merchant: merchant,
+        affiliate: affiliate,
+        milestone-target: milestone-target,
+        bonus-rate: bonus-rate,
+        current-sales: u0,
+        bonus-claimed: false,
+        active: true,
+        created-at: current-block,
+        expires-at: expires-at
+      }
+    )
+    (map-set contract-by-parties { merchant: merchant, affiliate: affiliate } { contract-id: contract-id })
+    (var-set next-contract-id (+ contract-id u1))
+    (ok contract-id)
+  )
+)
+
+(define-public (claim-milestone-bonus (contract-id uint))
+  (let
+    (
+      (contract-data (unwrap! (map-get? performance-contracts { contract-id: contract-id }) err-contract-not-found))
+      (affiliate (get affiliate contract-data))
+    )
+    (asserts! (is-eq tx-sender affiliate) err-unauthorized)
+    (asserts! (get active contract-data) err-unauthorized)
+    (asserts! (not (get bonus-claimed contract-data)) err-contract-completed)
+    (asserts! (>= (get current-sales contract-data) (get milestone-target contract-data)) err-milestone-not-reached)
+    (map-set performance-contracts { contract-id: contract-id } (merge contract-data { bonus-claimed: true }))
+    (ok (get bonus-rate contract-data))
   )
 )
